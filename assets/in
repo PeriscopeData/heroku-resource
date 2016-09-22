@@ -1,0 +1,24 @@
+#!/bin/bash
+exec 3>&1 # make stdout available as fd 3 for the result
+exec 1>&2 # redirect all output to stderr for logging
+
+source=$1
+
+if [ -z "$source" ]; then
+  echo "usage: $0 <path/to/source>"
+  exit 1
+fi
+payload=$(mktemp /tmp/resource-in.XXXXXX)
+
+cat > $payload <&0
+
+cat $payload
+cd $source
+heroku_api_key=$(jq -r '.source.heroku_api_key // ""' < $payload)
+heroku_app_name=$(jq -r '.source.heroku_app_name // ""' < $payload)
+
+jq -n "{
+  version: {
+  },
+  metadata: []
+}" >&3

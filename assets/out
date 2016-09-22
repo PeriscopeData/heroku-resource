@@ -1,0 +1,196 @@
+#!/bin/bash -x
+
+# Initial a promotion from one app to another in a given pipeline
+# pipeline_id
+# source_app_id
+# target_app_id
+# heroku_api_key
+# =PROMOTION_ID
+promote() {
+  local OUTPUT_FILE=promote_response
+  set +e
+  read -r -d '' PROMOTE_PAYLOAD <<-EOF
+    {"pipeline":{"id":"$pipeline_id"},
+    "source":   {"app":{"id":"$source_app_id"}},
+    "targets": [{"app":{"id":"$target_app_id"}}]}
+EOF
+  set -e
+  /usr/bin/curl -sX POST -d "$PROMOTE_PAYLOAD" \
+    https://api.heroku.com/pipeline-promotions \
+    -H "Accept: application/vnd.heroku+json; version=3" \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer $heroku_api_key" > $OUTPUT_FILE
+  PROMOTION_ID=`jq -r .id $OUTPUT_FILE`
+  if [ $PROMOTION_ID == null -o $PROMOTION_ID == badrequest ]; then
+    echo Promotion failed: Got
+    cat $OUTPUT_FILE
+    exit 1
+  fi
+}
+
+
+# Get status of a promotion
+# PROMOTION_ID
+# heroku_api_key
+# =STATUS
+# =ERROR_MSG
+check_promotion(){
+  /usr/bin/curl -s https://api.heroku.com/pipeline-promotions/$PROMOTION_ID/promotion-targets \
+    -H "Accept: application/vnd.heroku+json; version=3" \
+    -H "Authorization: Bearer $heroku_api_key" > status
+  STATUS=`jq -r .[0].status < status`
+  ERROR_MSG=`jq -r .[0].error_message < status`
+}
+
+
+# Promotes a build then watches output until it succeeds or errors
+# PROMOTION_ID
+# STATUS
+# ERROR_MSG
+promote_and_watch() {
+  promote
+  echo Promoting $PROMOTION_ID
+  check_promotion
+  while [ $STATUS != succeeded -a $ERROR_MSG == null ]; do
+    check_promotion
+    echo status: $STATUS, error: $ERROR_MSG
+    sleep 1
+  done
+}
+
+
+# Tar up a set of files and upload to an s3 bucket.
+# Expects the aws command to already be authed. EC2 roles are great for this.
+# tar_args
+# SLUG_NAME
+# bucket
+# =S3_URL
+# =SIG_SHA256
+tar_and_upload_slug() {
+  SLUG_PATH=`pwd`/$SLUG_NAME
+  local S3_SLUG_PATH=/$bucket/$SLUG_NAME
+  pushd $build_dir
+    tar -czf $tar_args $SLUG_PATH .
+  popd
+  tar -ztf $SLUG_PATH
+  SIG_SHA256=`sha256sum $SLUG_PATH | cut -d ' ' -f 1`
+  aws s3 cp $SLUG_PATH s3:/$S3_SLUG_PATH
+  S3_URL=`aws --output=text s3 presign $S3_SLUG_PATH`
+}
+
+
+# Initiate a heroku build from the given slug. The app is automatically pushed on success.
+# Watches build output, returns false if it does not contain a success message.
+# heroku_app_name
+# buildpacks
+# heroku_api_key
+# S3_URL
+# SIG_SHA256
+# =BUILD_OUTPUT_URL
+build_slug() {
+  set +e
+    read -r -d '' BUILD_PAYLOAD <<-EOF
+    {
+    "buildpacks": $buildpacks,
+    "source_blob": {
+      "checksum": "SHA256:$SIG_SHA256",
+      "url": "$S3_URL"
+    }}
+EOF
+  set -e
+  local OUTPUT_FILE=build_response
+  /usr/bin/curl -n -X POST https://api.heroku.com/apps/$heroku_app_name/builds \
+    -d "$BUILD_PAYLOAD" \
+    -H "Content-Type: application/json" \
+    -H "Accept: application/vnd.heroku+json; version=3" \
+    -H "Authorization: Bearer $heroku_api_key" > $OUTPUT_FILE
+
+  BUILD_ID=`jq -r .id $OUTPUT_FILE`
+  if [ $BUILD_ID == bad_request ]; then
+    cat $OUTPUT_FILE
+    exit 1
+  fi
+
+  SOURCE_BLOB=`jq -r .source_blob.url $OUTPUT_FILE`
+
+  BUILD_OUTPUT_URL=`jq -r .output_stream_url $OUTPUT_FILE`
+  if [ $BUILD_OUTPUT_URL == null ]; then
+    cat $OUTPUT_FILE
+    exit 1
+  fi
+}
+
+
+# BUILD_OUTPUT_URL
+watch_build_output() {
+  local OUTPUT_FILE=output_response
+  /usr/bin/curl -s $BUILD_OUTPUT_URL | tee $OUTPUT_FILE
+  grep "deployed to Heroku" $OUTPUT_FILE || exit 1
+}
+
+#########################################
+# START
+#########################################
+
+exec 3>&1 # make stdout available as fd 3 for the result
+exec 1>&2 # redirect all output to stderr for logging
+
+source=$1
+
+if [ -z "$source" ]; then
+  echo "usage: $0 <path/to/source>"
+  exit 1
+fi
+payload=$(mktemp /tmp/resource-in.XXXXXX)
+
+cat > $payload <&0
+
+cd $source
+heroku_api_key=$(jq -r '.source.heroku_api_key // ""' < $payload)
+heroku_app_name=$(jq -r '.source.heroku_app_name // ""' < $payload)
+
+bucket=$(jq -r '.params.bucket // ""' < $payload)
+tar_args=$(jq -r '.params.tar_args // ""' < $payload)
+buildpacks=$(jq -r '.params.buildpacks // "[]"' < $payload)
+slug_version=$(jq -r '.params.slug_version // ""' < $payload)
+build_dir=$(jq -r '.params.build_dir // ""' < $payload)
+
+pipeline_id=$(jq -r '.params.pipeline_id // ""' < $payload)
+source_app_id=$(jq -r '.params.source_app_id // ""' < $payload)
+target_app_id=$(jq -r '.params.target_app_id // ""' < $payload)
+
+if [ -z "$slug_version" ]; then
+  version=""
+else
+  version=`cat $slug_version`
+fi
+SLUG_NAME=slug.$version.tar.gz
+
+if [ -n "$build_dir" ]; then
+  echo Building slug from $build_dir
+  set -e
+  tar_and_upload_slug
+  build_slug
+  watch_build_output
+
+  jq -n "{
+    version: {
+      build_id: $(echo $BUILD_ID | jq -R .)
+    },
+    metadata: [
+      { name: \"source\", value: $(echo $SOURCE_BLOB | head -c 12 | jq -R .) }
+    ]
+  }" >&3
+elif [ -n "$pipeline_id" ]; then
+  echo "Promoting on pipeline $pipeline_id"
+  promote_and_watch
+
+  jq -n "{
+    version: {
+      promotion_id: $(echo $PROMOTION_ID | jq -R .)
+    },
+    metadata: [
+      { name: \"promotion_id\", value: $(echo $PROMOTION_ID | jq -R .) }
+    ]
+  }" >&3
+fi

@@ -8,13 +8,13 @@ Heroku resource for concourse. Can build slugs from a directory and promote apps
   attempts: 1
   params:
     bucket: {{bucket}}
-    slug_exclude: --exclude extras/go --exclude doc/ --exclude .git/
+    tar_args: --exclude extras/go --exclude doc/ --exclude .git/a
     build_dir: source-dir
-    buildpacks: 
+    buildpacks:
     - url: https://github.com/heroku/heroku-buildpack-ruby
     slug_version: version/number
 
-# Deploy  
+# Deploy
 - put: heroku
   timeout: 1m
   attempts: 1
