@@ -145,7 +145,7 @@ payload=$(mktemp /tmp/resource-in.XXXXXX)
 cat > $payload <&0
 
 cd $source
-if [ $(jq -r '.source.debug // ""' < $payload) == true ]; then set -x; fi
+if [ $(jq -r '.source.debug // "false"' < $payload) == true ]; then set -x; fi
 
 heroku_api_key=$(jq -r '.source.heroku_api_key // ""' < $payload)
 heroku_app_name=$(jq -r '.source.heroku_app_name // ""' < $payload)
