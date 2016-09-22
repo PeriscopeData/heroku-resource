@@ -1,4 +1,4 @@
-#!/bin/bash -x
+#!/bin/bash
 
 # Initial a promotion from one app to another in a given pipeline
 # pipeline_id
@@ -72,7 +72,6 @@ tar_and_upload_slug() {
   pushd $build_dir
     tar -czf $tar_args $SLUG_PATH .
   popd
-  tar -ztf $SLUG_PATH
   SIG_SHA256=`sha256sum $SLUG_PATH | cut -d ' ' -f 1`
   aws s3 cp $SLUG_PATH s3:/$S3_SLUG_PATH
   S3_URL=`aws --output=text s3 presign $S3_SLUG_PATH`
@@ -146,6 +145,8 @@ payload=$(mktemp /tmp/resource-in.XXXXXX)
 cat > $payload <&0
 
 cd $source
+if [ $(jq -r '.source.debug // ""' < $payload) == true]; then set -x; fi
+
 heroku_api_key=$(jq -r '.source.heroku_api_key // ""' < $payload)
 heroku_app_name=$(jq -r '.source.heroku_app_name // ""' < $payload)
 
