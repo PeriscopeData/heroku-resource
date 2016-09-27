@@ -32,9 +32,6 @@ heroku_app_name=$(jq -r '.source.heroku_app_name // ""' < $payload)
 
 get_app_info
 
-jq -n "{
-  version: {
-    releated_at: $RELEASED_AT
-  },
-  metadata: []
-}" >&3
+jq -n "[{
+  released_at: $RELEASED_AT
+}]" >&3

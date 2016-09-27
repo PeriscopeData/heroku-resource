@@ -34,7 +34,7 @@ get_app_info
 
 jq -n "{
   version: {
-    releated_at: $RELEASED_AT
+    released_at: $RELEASED_AT
   },
   metadata: []
 }" >&3
