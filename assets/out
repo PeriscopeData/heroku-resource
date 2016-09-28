@@ -70,7 +70,7 @@ tar_and_upload_slug() {
   SLUG_PATH=`pwd`/$SLUG_NAME
   local S3_SLUG_PATH=/$bucket/$SLUG_NAME
   pushd $build_dir
-    tar -czf $tar_args $SLUG_PATH .
+    tar -czf $SLUG_PATH $tar_args .
   popd
   SIG_SHA256=`sha256sum $SLUG_PATH | cut -d ' ' -f 1`
   aws s3 cp $SLUG_PATH s3:/$S3_SLUG_PATH
